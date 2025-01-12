@@ -1,0 +1,11 @@
+SRC_LANGUAGE = 'de'
+TGT_LANGUAGE = 'en'
+UNK_IDX, PAD_IDX, BOS_IDX, EOS_IDX = 0, 1, 2, 3
+special_symbols = ['<unk>', '<pad>', '<bos>', '<eos>']
+language_index = {SRC_LANGUAGE: 0, TGT_LANGUAGE: 1}
+BATCH_SIZE = 8
+NUM_EPOCHS = 10
+NUM_ENCODER = 6
+NUM_DECODER = 6
+D_MODEL = 512
+NUM_HEADS = 8
