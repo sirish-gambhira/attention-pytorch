@@ -12,6 +12,7 @@ from config import *
 from tqdm import tqdm
 import wandb
 import warnings
+import os
 def get_all_sentences(ds, lang):
     for item in ds:
         return item['translation'][lang]
@@ -54,7 +55,7 @@ def get_ds(config):
     print("Max tgt tokens: ", max_tgt_len)
     
     train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
-    valid_dataloader = DataLoader(valid_ds, batch_size=config['batch_size'])
+    valid_dataloader = DataLoader(valid_ds, batch_size=1, shuffle=True)
     
     return tokenizer_src, tokenizer_tgt, train_dataloader, valid_dataloader
 
@@ -68,14 +69,6 @@ def train_model(config):
     tokenizer_src, tokenizer_tgt, train_dataloader, valid_dataloader = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
     
-    # wandb project
-    wandb.login(key='eca5b7f370cf3773b5ab9fa5087aef5aafa2b209')
-    my_project = wandb.init(
-        project="attention-pytorch",
-        notes="Encoder-decoder",
-    )
-    wandb.config = config
-    
     optimizer = torch.optim.Adam(model.parameters(), lr = config['lr'], eps=1e-9)
     
     initial_epoch = 0
@@ -84,13 +77,16 @@ def train_model(config):
         model_filename = get_weights_file_path(config, config['preload'])
         print(f"Preloading: {model_filename}")
         state = torch.load(model_filename)
-        initial_epoch = state['epoch'] * 1
+        model.load_state_dict(state['model_state_dict'])
         optimizer.load_state_dict(state['optimizer_state_dict'])
+        initial_epoch = state['epoch'] + 1
         global_step = state['global_step']
+        del state
     
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id("[PAD]"), label_smoothing=0.1).to(device)
     
     for epoch in range(initial_epoch, config['num_epochs']):
+        torch.cuda.empty_cache()
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing epoch: {epoch:02d}")
         for batch in batch_iterator:
@@ -101,11 +97,9 @@ def train_model(config):
 
             encoder_output = model.encode(encoder_input, encoder_mask)
             decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask)
-            
             proj_out = model.project(decoder_output)
-            
             label = batch['label'].to(device)
-            
+
             loss = loss_fn(proj_out.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({f"loss" : f"{loss.item():6.3f}"})
             
@@ -113,7 +107,7 @@ def train_model(config):
             
             loss.backward()
             optimizer.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             
             
             global_step += 1
@@ -129,6 +123,13 @@ def train_model(config):
 if __name__ == "__main__":
     warnings.filterwarnings('ignore')
     config = get_config()
+    # wandb project
+    wandb.login(key=os.environ['WANDB_KEY'])
+    my_project = wandb.init(
+        project="attention-pytorch",
+        notes="Encoder-decoder",
+    )
+    wandb.config = config
     train_model(config)
             
     

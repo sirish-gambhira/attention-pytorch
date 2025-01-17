@@ -5,10 +5,8 @@ import math
 class FeedForward(nn.Module):
     def __init__(self, d_model : int, ff_dim : int, dropout: float = 0.3):
         super().__init__()
-        self.d_model = d_model
-        self.ff_dim = ff_dim
-        self.l1 = nn.Linear(self.d_model, self.ff_dim)
-        self.l2 = nn.Linear(self.ff_dim, self.d_model)
+        self.l1 = nn.Linear(d_model, ff_dim)
+        self.l2 = nn.Linear(ff_dim, d_model)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
         
@@ -26,16 +24,17 @@ class ResidualConnection(nn.Module):
         self.norm = nn.LayerNorm(self.d_model)
     
     def forward(self, x, sublayer):
-        return x + self.dropout(sublayer(self.norm(x)))
+        sublayer_out = sublayer(self.norm(x))
+        return x + self.dropout(sublayer_out)
         
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads : int, d_model : int, dropout : int):
         super().__init__()
         assert d_model % num_heads == 0, "d model should be divisible by num heads"
-        self.wq = nn.Linear(d_model, d_model)
-        self.wk = nn.Linear(d_model, d_model)
-        self.wv = nn.Linear(d_model, d_model)
-        self.wo = nn.Linear(d_model, d_model)
+        self.wq = nn.Linear(d_model, d_model, bias=False)
+        self.wk = nn.Linear(d_model, d_model, bias=False)
+        self.wv = nn.Linear(d_model, d_model, bias=False)
+        self.wo = nn.Linear(d_model, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
         self.d_head = d_model // num_heads
         self.d_model = d_model
@@ -46,14 +45,14 @@ class MultiHeadAttention(nn.Module):
         dk = q.shape[-1]
         attention_scores = (q @ k.transpose(-2, -1)) / math.sqrt(dk)
         if mask is not None:
-            attention_scores = torch.where(mask == 0, -torch.inf, attention_scores)
+            attention_scores.masked_fill_(mask == 0, -1e9)
+        attention_scores = attention_scores.softmax(dim=-1)
         if dropout is not None:
             attention_scores = dropout(attention_scores)
-        attention_out = attention_scores.softmax(dim=-1) @ v
+        attention_out = attention_scores @ v
         return attention_out, attention_scores
     
     def forward(self, q, k, v, mask=None):
-        
         qval = self.wq(q)  # [b, seq len, d model]
         kval = self.wk(k)
         vval = self.wv(v)
@@ -70,13 +69,13 @@ class MultiHeadAttention(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000, dropout = 0.1):
+    def __init__(self, d_model, seq_len, dropout = 0.1):
         super(PositionalEncoding, self).__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(d_model).unsqueeze(1)
-        pos = torch.exp(-torch.arange(0, d_model, 2) * math.log(10000) / d_model)
-        pe[:, 0::2] = torch.sin(position * pos)
-        pe[:, 1::2] = torch.cos(position * pos)
+        pe = torch.zeros(seq_len, d_model)
+        position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0)
         self.dropout = nn.Dropout(dropout)
         self.register_buffer('pe', pe)
@@ -84,8 +83,7 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         num_tokens = x.shape[1]
         x = x + self.pe[:, :num_tokens, :].requires_grad_(False)
-        x = self.dropout(x)
-        return x
+        return self.dropout(x)
 
 class InputEmbedding(nn.Module):
     def __init__(self, d_model: int, vocab_size: int):
@@ -118,8 +116,7 @@ class Encoder(nn.Module):
     def forward(self, x, mask):
         for layer in self.layers:
             x = layer(x, mask)
-        x = self.norm(x)
-        return x
+        return self.norm(x)
 
 class DecoderBlock(nn.Module):
     def __init__(self, d_model: int, self_attention_block : MultiHeadAttention, cross_attention_block: MultiHeadAttention, feed_forward_block: FeedForward, dropout: float):
@@ -146,8 +143,7 @@ class Decoder(nn.Module):
     def forward(self, x, enc_out, src_mask, tgt_mask):
         for layer in self.layers:
             x = layer(x, enc_out, src_mask, tgt_mask)
-        x = self.norm(x)
-        return x
+        return self.norm(x)
 
 class ProjectionLayer(nn.Module):
     def __init__(self, d_model: int, vocab_size: int):
@@ -155,7 +151,7 @@ class ProjectionLayer(nn.Module):
         self.layer = nn.Linear(d_model, vocab_size)
     
     def forward(self, x):
-        return torch.log_softmax(self.layer(x), dim = -1)
+        return self.layer(x)
 
 class Transformer(nn.Module):
     def __init__(self, encoder: Encoder, decoder: Decoder, src_embed: InputEmbedding, tgt_embed: InputEmbedding, src_pos: PositionalEncoding, tgt_pos: PositionalEncoding, projection: ProjectionLayer):
@@ -171,7 +167,8 @@ class Transformer(nn.Module):
     def encode(self, x, src_mask):
         src = self.src_embed(x)
         src = self.src_pos(src)
-        return self.encoder(src, src_mask)
+        src = self.encoder(src, src_mask)
+        return src
 
     def decode(self, enc_out, src_mask, tgt, tgt_mask):
         tgt = self.tgt_embed(tgt)
